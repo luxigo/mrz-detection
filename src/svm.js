@@ -5,6 +5,7 @@ var fs;
 
 const SVMPromise = Promise.resolve(require('libsvm-js/asm'));
 
+const groupBy = require('lodash.groupby');
 const hog = require('hog-features');
 const Kernel = require('ml-kernel');
 const range = require('lodash.range');
@@ -12,6 +13,35 @@ const uniq = require('lodash.uniq');
 const BSON = require('bson');
 
 let SVM;
+
+async function loadData(dir) {
+  const { readImages } = require('../src/util/readWrite');
+  dir = path.resolve(path.join(__dirname, '..'), dir);
+  const data = await readImages(dir);
+  for (let entry of data) {
+    let { image } = entry;
+    entry.descriptor = extractHOG(image);
+    entry.height = image.height;
+  }
+
+  const groupedData = groupBy(data, (d) => d.card);
+  for (let card in groupedData) {
+    const heights = groupedData[card].map((d) => d.height);
+    const maxHeight = Math.max.apply(null, heights);
+    const minHeight = Math.min.apply(null, heights);
+    for (let d of groupedData[card]) {
+      // This last descriptor is very important to differentiate numbers and letters
+      // Because with OCR-B font, numbers are slightly higher than numbers
+      let bonusFeature = 1;
+      if (minHeight !== maxHeight) {
+        bonusFeature = (d.height - minHeight) / (maxHeight - minHeight);
+      }
+      d.descriptor.push(bonusFeature);
+    }
+  }
+  return data;
+}
+
 function extractHOG(image) {
   image = image.scale({ width: 20, height: 20 });
   image = image.pad({
@@ -163,6 +193,7 @@ module.exports = function(options) {
     train,
     predict,
     extractHOG,
-    predictImages
+    predictImages,
+    loadData
   }
 };
