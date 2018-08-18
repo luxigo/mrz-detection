@@ -1,9 +1,6 @@
 // Runs a cross validation leaving all characters from an identity card out
 'use strict';
 
-const path = require('path');
-
-const groupBy = require('lodash.groupby');
 const uniq = require('lodash.uniq');
 const minimist = require('minimist');
 const paramGrid = require('ml-param-grid');
@@ -13,38 +10,10 @@ const {
   applyModel,
   predict,
   train,
-  extractHOG
+  loadData
 } = require('../src/svm');
-const { readImages } = require('../src/util/readWrite');
 
 const argv = minimist(process.argv.slice(2));
-
-async function loadData(dir) {
-  dir = path.resolve(path.join(__dirname, '..'), dir);
-  const data = await readImages(dir);
-  for (let entry of data) {
-    let { image } = entry;
-    entry.descriptor = extractHOG(image);
-    entry.height = image.height;
-  }
-
-  const groupedData = groupBy(data, (d) => d.card);
-  for (let card in groupedData) {
-    const heights = groupedData[card].map((d) => d.height);
-    const maxHeight = Math.max.apply(null, heights);
-    const minHeight = Math.min.apply(null, heights);
-    for (let d of groupedData[card]) {
-      // This last descriptor is very important to differentiate numbers and letters
-      // Because with OCR-B font, numbers are slightly higher than numbers
-      let bonusFeature = 1;
-      if (minHeight !== maxHeight) {
-        bonusFeature = (d.height - minHeight) / (maxHeight - minHeight);
-      }
-      d.descriptor.push(bonusFeature);
-    }
-  }
-  return data;
-}
 
 async function classify(data, options) {
   const testSet = data.filter((d) => d.card === options.testCard);
@@ -64,7 +33,6 @@ async function classify(data, options) {
   if (oneClass) {
     printPredictionOneClass(testSet, prediction);
   } else {
-    prediction = prediction.map((code) => String.fromCharCode(code));
     printPrediction(testSet, prediction);
   }
   classifier.free();
@@ -74,6 +42,7 @@ function printPrediction(dataSet, predicted) {
   const expected = dataSet.map((l) => {
     return String.fromCharCode(l.label);
   });
+  predicted = predicted.map((code) => String.fromCharCode(code));
   error(predicted, expected);
 }
 
@@ -137,13 +106,14 @@ async function exec() {
       const kernelOptionsGrid = getKernelOptionsGrid(argv);
       for (let SVMOptions of SVMOptionsGrid) {
         for (let kernelOptions of kernelOptionsGrid) {
+          console.log(Object.assign({}, SVMOptions, kernelOptions));
           await crossValidation(data, SVMOptions, kernelOptions);
         }
       }
     } else if (argv.saveModel) {
       const data = await loadData(argv.trainDir);
-      const SVMOptions = Array.from(getSVMOptionsGrid(argv));
-      const kernelOptions = Array.from(getKernelOptionsGrid(argv));
+      const SVMOptions = getSVMOptionsGrid(argv);
+      const kernelOptions = getKernelOptionsGrid(argv);
       if (SVMOptions.length !== 1) {
         console.log(SVMOptions);
         throw new Error('Cannot save model with multiple SVM parameters');
@@ -159,7 +129,6 @@ async function exec() {
       if (type === 'ONE_CLASS') {
         printPredictionOneClass(data, predicted);
       } else {
-        predicted = predicted.map((p) => String.fromCharCode(p));
         printPrediction(data, predicted);
       }
     } else if (argv.testDir) {
@@ -172,7 +141,8 @@ async function exec() {
       const testDescriptors = testData.map((l) => l.descriptor);
       for (let SVMOptions of SVMOptionsGrid) {
         for (let kernelOptions of kernelOptionsGrid) {
-          const { classifier } = await train(
+          console.log(Object.assign({}, SVMOptions, kernelOptions));
+          const { classifier, oneClass } = await train(
             trainData,
             SVMOptions,
             kernelOptions
@@ -183,7 +153,11 @@ async function exec() {
             testDescriptors,
             kernelOptions
           );
-          printPrediction(testData, predicted);
+          if (oneClass) {
+            printPredictionOneClass(testData, predicted);
+          } else {
+            printPrediction(testData, predicted);
+          }
         }
       }
     }
@@ -219,15 +193,17 @@ function getOptionsGrid(options, validOptions, mapProp = {}) {
 
 function getSVMOptionsGrid(options) {
   const validOptions = ['nu', 'cost', 'epsilon'];
-  return getOptionsGrid(options, validOptions);
+  return Array.from(getOptionsGrid(options, validOptions));
 }
 
 function getKernelOptionsGrid(options) {
   const validOptions = ['kernel', 'gamma'];
-  return getOptionsGrid(options, validOptions, {
-    kernel: 'type',
-    gamma: 'sigma'
-  });
+  return Array.from(
+    getOptionsGrid(options, validOptions, {
+      kernel: 'type',
+      gamma: 'sigma'
+    })
+  );
 }
 
 function validateArguments(args) {
